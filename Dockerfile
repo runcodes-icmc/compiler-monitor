@@ -1,8 +1,7 @@
 # Compilation image
-FROM debian:bullseye-slim as builder
+FROM debian:trixie-slim AS builder
 
 # Update system
-RUN apt-get update
 RUN apt-get update && apt-get upgrade -y
 
 # Install build tools
@@ -19,5 +18,5 @@ RUN cmake .
 RUN cmake --build .
 
 # Create final image with only the built binary
-FROM debian:bullseye-slim as dist
+FROM debian:trixie-slim AS dist
 COPY --from=builder /build/monitor /usr/bin/monitor
