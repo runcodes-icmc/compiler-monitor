@@ -65,23 +65,40 @@ elapsed_secs(struct timespec *ts_start, struct timespec *ts_end) {
 
 static char **
 parse_args(char *command) {
-    char **args = NULL,
+    char **args = NULL, **tmp,
             *arg;
     int i;
 
     arg = strtok(command, " \t");
     for (i = 0; arg != NULL; i++) {
-        args = (char **) realloc(args, sizeof(char *) * (i + 2));
+        tmp = (char **) realloc(args, sizeof(char *) * (i + 2));
+        if (!tmp) {
+            free(args);
+            return NULL;
+        }
+        args = tmp;
         args[i] = arg;
         arg = strtok(NULL, " \t");
     }
-    args[i] = NULL;
 
+    if (i == 0) {
+        /* Empty (or whitespace-only) command: nothing to exec. */
+        return NULL;
+    }
+
+    args[i] = NULL;
     return args;
 }
 
 static int
 set_limits(const MonitorParams *params) {
+    /* Core dumps serve no purpose in the sandbox and only waste disk; the
+     * terminating signal is already reported via WTERMSIG regardless of
+     * whether a core would have been produced. */
+    struct rlimit core_limit = {0, 0};
+    if (setrlimit(RLIMIT_CORE, &core_limit) < 0)
+        return 0;
+
     /* File size limit */
     if (params->fs_limit > 0) {
         struct rlimit fs_limit;
@@ -118,8 +135,19 @@ reopen_streams(const MonitorParams *params) {
 static void
 exec_cmd(const MonitorParams *params) {
     char buf[COMMAND_MAX + 1];
+
+    if (strlen(params->command) > COMMAND_MAX) {
+        fprintf(stderr, "monitor: error: command exceeds %d characters\n", COMMAND_MAX);
+        exit(255);
+    }
     strncpy(buf, params->command, COMMAND_MAX);
+    buf[COMMAND_MAX] = '\0';
+
     char **args = parse_args(buf);
+    if (!args) {
+        fprintf(stderr, "monitor: error: empty or invalid command\n");
+        exit(255);
+    }
 
     if (!set_limits(params)) {
         fprintf(stderr, "monitor: Failed to set process limits.\n");
@@ -162,9 +190,12 @@ trace_child(pid_t child_pid, const MonitorParams *params, MonitorStats *stats) {
         } else if (WIFSIGNALED(status)) {
             clock_gettime(CLOCK_MONOTONIC, &ts_end);
             stats->time_sec = elapsed_secs(&ts_start, &ts_end);
-            if (WCOREDUMP(status)) {
-            } else
-                stats->signal = WTERMSIG(status);
+            /* Report the terminating signal regardless of whether a core
+             * dump was produced: a core dump does not mean the process
+             * exited cleanly, and omitting the signal here let a crash
+             * (e.g. SIGSEGV) be mistaken for a clean run by callers that
+             * only check `signal`. */
+            stats->signal = WTERMSIG(status);
             break;
         }
     }
